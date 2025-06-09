@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบจัดการข้อมูลรถขนส่ง INSULOGISTIC</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Font: Inter for modern typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Firebase CDN for core app, authentication, and Firestore -->
+    <script type="module">
+        // Import Firebase modules for web
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase global variables injected by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Initialize Firebase application
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app); // Get Firestore database instance
+        const auth = getAuth(app); // Get Authentication instance
+
+        let currentUserId = null; // Variable to store the authenticated user's ID
+
+        // Expose Firebase instances globally for the main script block
+        window.firebaseApp = app;
+        window.firebaseDb = db;
+        window.firebaseAuth = auth;
+
+        // Listen for authentication state changes
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUserId = user.uid; // User is signed in
+                console.log("Firebase authenticated. User ID:", currentUserId);
+            } else {
+                // User is signed out, attempt to sign in
+                try {
+                    if (initialAuthToken) { // Try custom token if available (from Canvas environment)
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        currentUserId = auth.currentUser.uid;
+                        console.log("Signed in with custom token. User ID:", currentUserId);
+                    } else { // Otherwise, sign in anonymously
+                        await signInAnonymously(auth);
+                        currentUserId = auth.currentUser.uid;
+                        console.log("Signed in anonymously. User ID:", currentUserId);
+                    }
+                } catch (error) {
+                    console.error("Firebase authentication error:", error);
+                    // Fallback: Generate a random UUID for userId if authentication fails
+                    currentUserId = crypto.randomUUID();
+                    console.warn("Using a random UUID for userId due to authentication failure. Data might not persist across sessions without proper auth.");
+                }
+            }
+            // Display user ID on the UI
+            const userIdDisplay = document.getElementById('user-id-display');
+            if (userIdDisplay) {
+                userIdDisplay.textContent = `ผู้ใช้: ${currentUserId}`;
+            }
+
+            // Once authentication is ready and we have a userId, set up Firestore listeners
+            if (currentUserId) {
+                window.currentUserId = currentUserId; // Make userId globally available for other scripts
+                window.setupFirestoreListeners(); // Call function to set up real-time data listeners
+            }
+        });
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif; /* Apply Inter font to the whole body */
+            background-color: #f3f4f6; /* Light gray background */
+        }
+        /* Custom scrollbar for better aesthetics and usability */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #e0e0e0; /* Light gray track */
+            border-radius: 10px; /* Rounded corners for the track */
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #888; /* Darker gray thumb */
+            border-radius: 10px; /* Rounded corners for the thumb */
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555; /* Even darker gray on hover */
+        }
+        /* Styles for the custom modal */
+        .modal {
+            display: none; /* Hidden by default */
+            position: fixed; /* Stay in place */
+            z-index: 1000; /* Sit on top */
+            left: 0;
+            top: 0;
+            width: 100%; /* Full width */
+            height: 100%; /* Full height */
+            overflow: auto; /* Enable scroll if needed */
+            background-color: rgba(0,0,0,0.4); /* Black w/ opacity */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            margin: auto;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            width: 90%;
+            max-width: 400px;
+            text-align: center;
+            animation: fadeIn 0.3s ease-out; /* Simple fade-in animation */
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .modal-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 25px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+    <!-- Main container for the application content -->
+    <div class="container mx-auto px-4 py-8 flex-grow">
+        <!-- Header Section: Prominent title, company name, and user ID display -->
+        <header class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white p-6 rounded-xl shadow-lg mb-8">
+            <h1 class="text-4xl font-bold text-center mb-2">ระบบจัดการข้อมูลรถขนส่ง</h1>
+            <p class="text-xl text-center">บริษัท INSULOGISTIC</p>
+            <p id="user-id-display" class="text-sm text-center mt-2">ผู้ใช้: กำลังโหลด...</p> <!-- User ID display, initially loading -->
+        </header>
+
+        <!-- Navigation Buttons: Allows users to switch between different views/filters -->
+        <nav class="flex flex-wrap justify-center gap-4 mb-8">
+            <button id="btn-show-all" class="bg-gray-700 hover:bg-gray-800 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition duration-300 transform hover:scale-105">
+                ดูข้อมูลรถทั้งหมด
+            </button>
+            <button id="btn-show-samutprakan" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition duration-300 transform hover:scale-105">
+                ศูนย์สมุทรปราการ
+            </button>
+            <button id="btn-show-samutsakhon" class="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition duration-300 transform hover:scale-105">
+                ศูนย์สมุทรสาคร
+            </button>
+            <button id="btn-show-add-form" class="bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-semibold py-3 px-6 rounded-lg shadow-md transition duration-300 transform hover:scale-105">
+                เพิ่มข้อมูลรถใหม่
+            </button>
+        </nav>
+
+        <!-- Loading indicator for data operations -->
+        <div id="loading-indicator" class="hidden text-center text-blue-600 font-semibold text-lg mb-4">
+            กำลังโหลดข้อมูล...
+        </div>
+
+        <!-- Vehicle List Section: Displays vehicle data in a table -->
+        <div id="vehicle-list-section" class="bg-white p-6 rounded-xl shadow-lg mb-8">
+            <h2 class="text-3xl font-semibold text-gray-800 mb-6">ข้อมูลรถขนส่งทั้งหมด</h2>
+            <!-- Search and Filter controls for the vehicle list -->
+            <div class="mb-4 flex flex-col sm:flex-row gap-4">
+                <input type="text" id="search-input" placeholder="ค้นหาด้วยทะเบียนรถ, ยี่ห้อ, รุ่น..." class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm">
+                <select id="filter-type" class="p-3 border border-gray-300 rounded-lg shadow-sm">
+                    <option value="">กรองตามประเภท</option>
+                    <option value="รถเล็ก">รถเล็ก</option>
+                    <option value="รถกลาง">รถกลาง</option>
+                    <option value="รถใหญ่">รถใหญ่</option>
+                    <option value="รถพ่วง">รถพ่วง</option>
+                </select>
+                <select id="filter-status" class="p-3 border border-gray-300 rounded-lg shadow-sm">
+                    <option value="">กรองตามสถานะ</option>
+                    <option value="พร้อมใช้งาน">พร้อมใช้งาน</option>
+                    <option value="ไม่พร้อมใช้งาน">ไม่พร้อมใช้งาน</option>
+                    <option value="ซ่อมบำรุง">ซ่อมบำรุง</option>
+                    <option value="จอด">จอด</option>
+                    <option value="ขายแล้ว">ขายแล้ว</option>
+                </select>
+            </div>
+            <!-- Table to display vehicle data -->
+            <div class="overflow-x-auto rounded-lg border border-gray-200 shadow-sm">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-100">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">รหัสรถ</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ศูนย์</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ประเภท</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ทะเบียน</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ยี่ห้อ/รุ่น</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">สถานะ</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ภาษีหมด</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">พ.ร.บ.หมด</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">จัดการ</th>
+                        </tr>
+                    </thead>
+                    <tbody id="vehicle-table-body" class="bg-white divide-y divide-gray-200">
+                        <!-- Vehicle rows will be populated here by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+            <!-- Message displayed when no vehicles are found after filtering/searching -->
+            <p id="no-vehicles-message" class="text-center text-gray-500 mt-4 hidden">ไม่พบข้อมูลรถ</p>
+        </div>
+
+        <!-- Add/Edit Vehicle Form Section: Hidden by default, shown when "เพิ่มข้อมูลรถใหม่" is clicked -->
+        <div id="add-edit-form-section" class="bg-white p-8 rounded-xl shadow-lg mb-8 hidden">
+            <h2 id="form-title" class="text-3xl font-semibold text-gray-800 mb-6">เพิ่มข้อมูลรถใหม่</h2>
+            <form id="vehicle-form" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Vehicle ID and Center -->
+                <div>
+                    <label for="vehicleId" class="block text-sm font-medium text-gray-700 mb-1">รหัสรถ</label>
+                    <input type="text" id="vehicleId" name="vehicleId" required class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label for="center" class="block text-sm font-medium text-gray-700 mb-1">ศูนย์ประจำ</label>
+                    <select id="center" name="center" required class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                        <option value="">เลือกศูนย์</option>
+                        <option value="สมุทรปราการ">สมุทรปราการ</option>
+                        <option value="สมุทรสาคร">สมุทรสาคร</option>
+                    </select>
+                </div>
+
+                <!-- Vehicle Type and License Plate -->
+                <div>
+                    <label for="vehicleType" class="block text-sm font-medium text-gray-700 mb-1">ประเภทรถ</label>
+                    <select id="vehicleType" name="vehicleType" required class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                        <option value="">เลือกประเภทรถ</option>
+                        <option value="รถเล็ก">รถเล็ก</option>
+                        <option value="รถกลาง">รถกลาง</option>
+                        <option value="รถใหญ่">รถใหญ่</option>
+                        <option value="รถพ่วง">รถพ่วง</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="licensePlate" class="block text-sm font-medium text-gray-700 mb-1">ทะเบียนรถ</label>
+                    <input type="text" id="licensePlate" name="licensePlate" required class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+
+                <!-- Make and Model -->
+                <div>
+                    <label for="make" class="block text-sm font-medium text-gray-700 mb-1">ยี่ห้อ</label>
+                    <input type="text" id="make" name="make" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label for="model" class="block text-sm font-medium text-gray-700 mb-1">รุ่น</label>
+                    <input type="text" id="model" name="model" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+
+                <!-- Color and Year of Manufacture -->
+                <div>
+                    <label for="color" class="block text-sm font-medium text-gray-700 mb-1">สี</label>
+                    <input type="text" id="color" name="color" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label for="year" class="block text-sm font-medium text-gray-700 mb-1">ปีที่ผลิต</label>
+                    <input type="number" id="year" name="year" min="1900" max="2099" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+
+                <!-- Fuel Type and VIN -->
+                <div>
+                    <label for="fuelType" class="block text-sm font-medium text-gray-700 mb-1">ประเภทเชื้อเพลิง</label>
+                    <select id="fuelType" name="fuelType" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                        <option value="">เลือกประเภทเชื้อเพลิง</option>
+                        <option value="ดีเซล">ดีเซล</option>
+                        <option value="เบนซิน">เบนซิน</option>
+                        <option value="NGV">NGV</option>
+                        <option value="LPG">LPG</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="vin" class="block text-sm font-medium text-gray-700 mb-1">เลขตัวถัง (VIN)</label>
+                    <input type="text" id="vin" name="vin" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+
+                <!-- Engine Number and Max Load Weight -->
+                <div>
+                    <label for="engineNo" class="block text-sm font-medium text-gray-700 mb-1">เลขเครื่องยนต์</label>
+                    <input type="text" id="engineNo" name="engineNo" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label for="maxLoadWeight" class="block text-sm font-medium text-gray-700 mb-1">น้ำหนักบรรทุกสูงสุด (ตัน)</label>
+                    <input type="number" id="maxLoadWeight" name="maxLoadWeight" step="0.01" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+
+                <!-- Number of Wheels and Current Status -->
+                <div>
+                    <label for="numWheels" class="block text-sm font-medium text-gray-700 mb-1">จำนวนล้อ</label>
+                    <input type="number" id="numWheels" name="numWheels" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label for="currentStatus" class="block text-sm font-medium text-gray-700 mb-1">สถานะปัจจุบัน</label>
+                    <select id="currentStatus" name="currentStatus" required class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                        <option value="">เลือกสถานะ</option>
+                        <option value="พร้อมใช้งาน">พร้อมใช้งาน</option>
+                        <option value="ไม่พร้อมใช้งาน">ไม่พร้อมใช้งาน</option>
+                        <option value="ซ่อมบำรุง">ซ่อมบำรุง</option>
+                        <option value="จอด">จอด</option>
+                        <option value="ขายแล้ว">ขายแล้ว</option>
+                    </select>
+                </div>
+
+                <!-- Status Notes (full width) -->
+                <div class="md:col-span-2">
+                    <label for="statusNotes" class="block text-sm font-medium text-gray-700 mb-1">หมายเหตุสถานะ</label>
+                    <textarea id="statusNotes" name="statusNotes" rows="3" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"></textarea>
+                </div>
+
+                <!-- Document Expiry Dates -->
+                <div>
+                    <label for="registrationDate" class="block text-sm font-medium text-gray-700 mb-1">วันจดทะเบียนรถ</label>
+                    <input type="date" id="registrationDate" name="registrationDate" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label for="taxExpiryDate" class="block text-sm font-medium text-gray-700 mb-1">วันหมดอายุภาษี</label>
+                    <input type="date" id="taxExpiryDate" name="taxExpiryDate" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label for="compulsoryInsuranceExpiryDate" class="block text-sm font-medium text-gray-700 mb-1">วันหมดอายุ พ.ร.บ.</label>
+                    <input type="date" id="compulsoryInsuranceExpiryDate" name="compulsoryInsuranceExpiryDate" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label for="voluntaryInsuranceExpiryDate" class="block text-sm font-medium text-gray-700 mb-1">วันหมดอายุประกันภัย</label>
+                    <input type="date" id="voluntaryInsuranceExpiryDate" name="voluntaryInsuranceExpiryDate" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+
+                <!-- Transport License Expiry (full width) -->
+                <div class="md:col-span-2">
+                    <label for="transportLicenseExpiryDate" class="block text-sm font-medium text-gray-700 mb-1">วันหมดอายุใบอนุญาตประกอบการขนส่ง</label>
+                    <input type="date" id="transportLicenseExpiryDate" name="transportLicenseExpiryDate" class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                </div>
+
+                <!-- Form Action Buttons -->
+                <div class="md:col-span-2 flex justify-end gap-4 mt-6">
+                    <button type="button" id="cancel-form-btn" class="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition duration-300 transform hover:scale-105">
+                        ยกเลิก
+                    </button>
+                    <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition duration-300 transform hover:scale-105">
+                        บันทึกข้อมูล
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Custom Confirmation Modal -->
+    <div id="confirmation-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3 class="text-xl font-semibold text-gray-800 mb-4" id="modal-message"></h3>
+            <div class="modal-buttons">
+                <button id="modal-cancel-btn" class="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-5 rounded-lg shadow-md transition duration-300 transform hover:scale-105">
+                    ยกเลิก
+                </button>
+                <button id="modal-confirm-btn" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-5 rounded-lg shadow-md transition duration-300 transform hover:scale-105">
+                    ยืนยัน
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer Section -->
+    <footer class="bg-gray-800 text-white text-center p-4 mt-8 rounded-t-xl shadow-inner">
+        <p>&copy; 2023 INSULOGISTIC. All rights reserved.</p>
+    </footer>
+
+    <script type="module">
+        // Import Firestore functions
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Get references to key HTML elements
+        const vehicleListSection = document.getElementById('vehicle-list-section');
+        const addEditFormSection = document.getElementById('add-edit-form-section');
+        const vehicleTableBody = document.getElementById('vehicle-table-body');
+        const noVehiclesMessage = document.getElementById('no-vehicles-message');
+        const loadingIndicator = document.getElementById('loading-indicator');
+
+        const btnShowAll = document.getElementById('btn-show-all');
+        const btnShowSamutprakan = document.getElementById('btn-show-samutprakan');
+        const btnShowSamutsakhon = document.getElementById('btn-show-samutsakhon');
+        const btnShowAddForm = document.getElementById('btn-show-add-form');
+        const cancelFormBtn = document.getElementById('cancel-form-btn');
+        const vehicleForm = document.getElementById('vehicle-form');
+        const formTitle = document.getElementById('form-title');
+
+        const searchInput = document.getElementById('search-input');
+        const filterType = document.getElementById('filter-type');
+        const filterStatus = document.getElementById('filter-status');
+
+        const confirmationModal = document.getElementById('confirmation-modal');
+        const modalMessage = document.getElementById('modal-message');
+        const modalCancelBtn = document.getElementById('modal-cancel-btn');
+        const modalConfirmBtn = document.getElementById('modal-confirm-btn');
+
+        let currentFilterCenter = ''; // Stores the currently active center filter
+        let vehicles = []; // Will store data fetched from Firestore
+
+        // Firebase-related variables, globally accessible once authenticated
+        let db;
+        let appId;
+        let currentUserId;
+
+        // Function to set up Firestore listeners (called after authentication is ready)
+        window.setupFirestoreListeners = () => {
+            db = window.firebaseDb; // Get the initialized Firestore instance
+            appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'; // Get the app ID
+            currentUserId = window.currentUserId; // Get the authenticated user ID
+
+            if (!db || !currentUserId) {
+                console.error("Firestore DB or User ID not initialized. Cannot set up listeners.");
+                return;
+            }
+
+            loadingIndicator.classList.remove('hidden'); // Show loading indicator
+
+            // Define the collection path for public data (as per instructions for collaborative apps)
+            const vehiclesCollectionRef = collection(db, `artifacts/${appId}/public/data/vehicles`);
+
+            // Set up real-time listener for the vehicles collection
+            onSnapshot(vehiclesCollectionRef, (snapshot) => {
+                const fetchedVehicles = [];
+                snapshot.forEach(doc => {
+                    // Include document ID as 'firestoreDocId' if needed for direct doc manipulation
+                    fetchedVehicles.push({ firestoreDocId: doc.id, ...doc.data() });
+                });
+                vehicles = fetchedVehicles; // Update the local vehicles array
+                renderVehicles(); // Re-render the table with the new data
+                loadingIndicator.classList.add('hidden'); // Hide loading indicator
+                console.log("Vehicles data updated from Firestore.");
+            }, (error) => {
+                console.error("Error fetching vehicles from Firestore:", error);
+                loadingIndicator.classList.add('hidden'); // Hide loading indicator on error
+                // In a real app, display a user-friendly error message.
+            });
+        };
+
+        /**
+         * Hides all content sections and then displays the specified section.
+         * @param {HTMLElement} sectionToShow - The HTML element (section) to be displayed.
+         */
+        function showSection(sectionToShow) {
+            vehicleListSection.classList.add('hidden'); // Hide vehicle list
+            addEditFormSection.classList.add('hidden'); // Hide add/edit form
+            confirmationModal.classList.add('hidden'); // Hide confirmation modal
+            sectionToShow.classList.remove('hidden'); // Show the chosen section
+        }
+
+        /**
+         * Renders (or re-renders) the vehicle data into the HTML table.
+         * It applies search and filter criteria based on user input.
+         */
+        function renderVehicles() {
+            const searchTerm = searchInput.value.toLowerCase(); // Get search term and convert to lowercase for case-insensitive search
+            const selectedType = filterType.value; // Get selected vehicle type filter
+            const selectedStatus = filterStatus.value; // Get selected status filter
+
+            // Filter the 'vehicles' array based on all active criteria
+            const filteredVehicles = vehicles.filter(vehicle => {
+                // Check if vehicle matches the search term in license plate, make, or model
+                const matchesSearch = (
+                    (vehicle.licensePlate || '').toLowerCase().includes(searchTerm) ||
+                    (vehicle.make || '').toLowerCase().includes(searchTerm) ||
+                    (vehicle.model || '').toLowerCase().includes(searchTerm)
+                );
+                // Check if vehicle matches the current center filter (if any)
+                const matchesCenter = currentFilterCenter === '' || vehicle.center === currentFilterCenter;
+                // Check if vehicle matches the selected type filter (if any)
+                const matchesType = selectedType === '' || vehicle.vehicleType === selectedType;
+                // Check if vehicle matches the selected status filter (if any)
+                const matchesStatus = selectedStatus === '' || vehicle.currentStatus === selectedStatus;
+
+                return matchesSearch && matchesCenter && matchesType && matchesStatus; // Return true if all criteria are met
+            });
+
+            vehicleTableBody.innerHTML = ''; // Clear the existing rows in the table body
+
+            // Display message if no vehicles are found after filtering
+            if (filteredVehicles.length === 0) {
+                noVehiclesMessage.classList.remove('hidden');
+            } else {
+                noVehiclesMessage.classList.add('hidden'); // Hide message if vehicles are found
+                // Iterate over filtered vehicles and create a table row for each
+                filteredVehicles.forEach(vehicle => {
+                    const row = document.createElement('tr');
+                    row.className = 'hover:bg-gray-50'; // Add a subtle hover effect to rows
+                    row.innerHTML = `
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${vehicle.vehicleId || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${vehicle.center || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${vehicle.vehicleType || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${vehicle.licensePlate || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${(vehicle.make || '')} ${(vehicle.model || '')}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm">
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                                // Dynamic class for status badge based on current status
+                                vehicle.currentStatus === 'พร้อมใช้งาน' ? 'bg-green-100 text-green-800' :
+                                vehicle.currentStatus === 'ซ่อมบำรุง' ? 'bg-yellow-100 text-yellow-800' :
+                                'bg-red-100 text-red-800' /* For 'ไม่พร้อมใช้งาน', 'จอด', 'ขายแล้ว' */
+                            }">
+                                ${vehicle.currentStatus || ''}
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${vehicle.taxExpiryDate || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${vehicle.compulsoryInsuranceExpiryDate || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                            <!-- Edit and Delete buttons for each row -->
+                            <button onclick="editVehicle('${vehicle.vehicleId}')" class="text-indigo-600 hover:text-indigo-900 mr-2">แก้ไข</button>
+                            <button onclick="showDeleteConfirmation('${vehicle.vehicleId}')" class="text-red-600 hover:text-red-900">ลบ</button>
+                        </td>
+                    `;
+                    vehicleTableBody.appendChild(row); // Add the new row to the table
+                });
+            }
+        }
+
+        /**
+         * Handles the form submission for adding or updating a vehicle to Firestore.
+         * @param {Event} event - The form submission event.
+         */
+        vehicleForm.addEventListener('submit', async function(event) {
+            event.preventDefault(); // Prevent the default form submission behavior (page reload)
+
+            if (!db || !currentUserId) {
+                console.error("Firestore DB or User ID not available. Cannot save data.");
+                // In a real app, display an error message to the user.
+                return;
+            }
+
+            loadingIndicator.classList.remove('hidden'); // Show loading indicator
+
+            const formData = new FormData(vehicleForm); // Create a FormData object from the form
+            const vehicleData = {}; // Initialize an empty object to store form data
+            // Populate vehicleData object from form data
+            for (const [key, value] of formData.entries()) {
+                vehicleData[key] = value;
+            }
+
+            // Basic validation for essential required fields
+            if (!vehicleData.vehicleId || !vehicleData.center || !vehicleData.vehicleType || !vehicleData.licensePlate || !vehicleData.currentStatus) {
+                console.error("กรุณากรอกข้อมูลที่จำเป็น: รหัสรถ, ศูนย์ประจำ, ประเภทรถ, ทะเบียนรถ, สถานะปัจจุบัน");
+                loadingIndicator.classList.add('hidden');
+                return;
+            }
+
+            try {
+                // Determine Firestore document ID. We'll use vehicleId as the document ID for easy lookup.
+                const docRef = doc(db, `artifacts/${appId}/public/data/vehicles`, vehicleData.vehicleId);
+                await setDoc(docRef, vehicleData, { merge: true }); // Use merge: true to update existing fields and add new ones
+
+                console.log('ข้อมูลรถถูกบันทึก/อัปเดตใน Firestore:', vehicleData.vehicleId);
+                vehicleForm.reset(); // Clear all form fields after submission
+                showSection(vehicleListSection); // Switch back to the vehicle list view
+                // renderVehicles will be called by the onSnapshot listener automatically
+            } catch (error) {
+                console.error("Error saving vehicle to Firestore:", error);
+                // In a real app, display a user-friendly error message.
+            } finally {
+                loadingIndicator.classList.add('hidden'); // Hide loading indicator
+            }
+        });
+
+        // Event Listeners for Navigation Buttons: Control which section is visible and what data is filtered
+        btnShowAll.addEventListener('click', () => {
+            currentFilterCenter = ''; // Clear any specific center filter
+            searchInput.value = ''; // Clear search input
+            filterType.value = ''; // Clear type filter
+            filterStatus.value = ''; // Clear status filter
+            renderVehicles(); // Re-render with no specific center filter
+            showSection(vehicleListSection); // Show the vehicle list section
+        });
+
+        btnShowSamutprakan.addEventListener('click', () => {
+            currentFilterCenter = 'สมุทรปราการ'; // Set filter to Samut Prakan center
+            searchInput.value = '';
+            filterType.value = '';
+            filterStatus.value = '';
+            renderVehicles(); // Re-render with Samut Prakan filter
+            showSection(vehicleListSection);
+        });
+
+        btnShowSamutsakhon.addEventListener('click', () => {
+            currentFilterCenter = 'สมุทรสาคร'; // Set filter to Samut Sakhon center
+            searchInput.value = '';
+            filterType.value = '';
+            filterStatus.value = '';
+            renderVehicles(); // Re-render with Samut Sakhon filter
+            showSection(vehicleListSection);
+        });
+
+        btnShowAddForm.addEventListener('click', () => {
+            vehicleForm.reset(); // Clear the form fields for a new entry
+            formTitle.textContent = 'เพิ่มข้อมูลรถใหม่'; // Set the form title to "Add New Vehicle"
+            document.getElementById('vehicleId').readOnly = false; // Ensure Vehicle ID field is editable for new entry
+            showSection(addEditFormSection); // Show the add/edit form section
+        });
+
+        cancelFormBtn.addEventListener('click', () => {
+            vehicleForm.reset(); // Clear form fields
+            showSection(vehicleListSection); // Go back to the vehicle list
+        });
+
+        // Event Listeners for search and filter inputs: Trigger re-rendering of vehicles when inputs change
+        searchInput.addEventListener('input', renderVehicles);
+        filterType.addEventListener('change', renderVehicles);
+        filterStatus.addEventListener('change', renderVehicles);
+
+        /**
+         * Function to pre-fill the form with data for editing an existing vehicle.
+         * @param {string} vehicleId - The ID of the vehicle to be edited.
+         */
+        function editVehicle(vehicleId) {
+            const vehicleToEdit = vehicles.find(v => v.vehicleId === vehicleId); // Find the vehicle in the array by ID
+            if (vehicleToEdit) {
+                formTitle.textContent = `แก้ไขข้อมูลรถ: ${vehicleId}`; // Update form title to indicate editing
+                // Populate each form field with the vehicle's data
+                for (const key in vehicleToEdit) {
+                    const inputElement = document.getElementById(key);
+                    if (inputElement) { // Check if the element exists in the form
+                        inputElement.value = vehicleToEdit[key];
+                    }
+                }
+                document.getElementById('vehicleId').readOnly = true; // Make Vehicle ID read-only during edit
+                showSection(addEditFormSection); // Show the form section
+            } else {
+                console.error('ไม่พบข้อมูลรถสำหรับแก้ไข:', vehicleId); // Log error if vehicle not found
+                // In a real application, you would show a user-friendly message, e.g., "Vehicle not found."
+            }
+        }
+
+        // --- Custom Confirmation Modal Logic ---
+
+        let deleteConfirmedCallback = null; // Callback for when delete is confirmed
+
+        /**
+         * Displays the custom confirmation modal.
+         * @param {string} message - The message to display in the modal.
+         * @param {function} onConfirm - The function to call if confirmed.
+         */
+        function showConfirmationModal(message, onConfirm) {
+            modalMessage.textContent = message;
+            deleteConfirmedCallback = onConfirm; // Store the callback
+            confirmationModal.classList.remove('hidden');
+        }
+
+        /**
+         * Handles the delete confirmation by deleting the vehicle from Firestore.
+         * @param {string} vehicleId - The ID of the vehicle to be deleted.
+         */
+        function showDeleteConfirmation(vehicleId) {
+            showConfirmationModal(`คุณแน่ใจหรือไม่ที่จะลบข้อมูลรถ ${vehicleId} นี้?`, async () => {
+                // This function runs if the user clicks "ยืนยัน"
+                if (!db || !currentUserId) {
+                    console.error("Firestore DB or User ID not available. Cannot delete data.");
+                    // Display error to user
+                    return;
+                }
+                loadingIndicator.classList.remove('hidden'); // Show loading
+                try {
+                    const docRef = doc(db, `artifacts/${appId}/public/data/vehicles`, vehicleId);
+                    await deleteDoc(docRef); // Delete the document from Firestore
+                    console.log('ลบข้อมูลรถจาก Firestore:', vehicleId);
+                    // onSnapshot listener will automatically re-render the table after deletion
+                } catch (error) {
+                    console.error("Error deleting vehicle from Firestore:", error);
+                    // Display error to user
+                } finally {
+                    loadingIndicator.classList.add('hidden'); // Hide loading
+                    showSection(vehicleListSection); // Go back to list view
+                }
+            });
+        }
+
+        // Event listener for the modal's confirm button
+        modalConfirmBtn.addEventListener('click', () => {
+            if (deleteConfirmedCallback) {
+                deleteConfirmedCallback(); // Execute the stored callback
+            }
+            confirmationModal.classList.add('hidden'); // Hide the modal
+        });
+
+        // Event listener for the modal's cancel button
+        modalCancelBtn.addEventListener('click', () => {
+            confirmationModal.classList.add('hidden'); // Hide the modal
+            deleteConfirmedCallback = null; // Clear the callback
+        });
+
+        // Initial setup when the page loads
+        window.onload = () => {
+            // Initial render will happen after Firestore data is fetched by onSnapshot
+            // No need for loadVehiclesFromLocalStorage as data comes from Firestore now
+            showSection(vehicleListSection); // Start by showing the vehicle list section
+        };
+    </script>
+</body>
+</html>
