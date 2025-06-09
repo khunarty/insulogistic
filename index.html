@@ -16,7 +16,7 @@
         import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Firebase global variables injected by the Canvas environment
-        const appIdCanvas = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'; // Renamed to avoid conflict if projectId has appId key
+        // NOTE: __app_id is used in the second script for the collection path
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         // Default Firebase configuration for local testing or outside Canvas environment.
@@ -420,25 +420,27 @@
 
         // Firebase-related variables, globally accessible once authenticated
         let db;
-        let appId; // Renamed to appIdLocal to be clear this is the Canvas-provided appId for collection path
+        let appIdForFirestoreCollection; // Renamed to clearly indicate its use for Firestore collection paths
         let currentUserId;
 
         // Function to set up Firestore listeners (called after authentication is ready)
         window.setupFirestoreListeners = () => {
             db = window.firebaseDb; // Get the initialized Firestore instance
-            appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'; // Use the Canvas-provided appId for collection path
+            // Use the projectId from the firebaseConfig for the collection path as the source of truth
+            // This ensures consistency whether run in Canvas or standalone.
+            appIdForFirestoreCollection = window.firebaseApp.options.projectId;
             currentUserId = window.currentUserId; // Get the authenticated user ID
 
-            if (!db || !currentUserId) {
-                console.error("Firestore DB or User ID not initialized. Cannot set up listeners.");
+            if (!db || !currentUserId || !appIdForFirestoreCollection) {
+                console.error("Firestore DB, User ID, or Project ID for collection path not initialized. Cannot set up listeners.");
                 return;
             }
 
             loadingIndicator.classList.remove('hidden'); // Show loading indicator
 
             // Define the collection path for public data (as per instructions for collaborative apps)
-            // Using appId from Canvas for the collection path
-            const vehiclesCollectionRef = collection(db, `artifacts/${appId}/public/data/vehicles`);
+            // Using appIdForFirestoreCollection for the collection path
+            const vehiclesCollectionRef = collection(db, `artifacts/${appIdForFirestoreCollection}/public/data/vehicles`);
 
             // Set up real-time listener for the vehicles collection
             onSnapshot(vehiclesCollectionRef, (snapshot) => {
@@ -543,8 +545,8 @@
         vehicleForm.addEventListener('submit', async function(event) {
             event.preventDefault(); // Prevent the default form submission behavior (page reload)
 
-            if (!db || !currentUserId) {
-                console.error("Firestore DB or User ID not available. Cannot save data.");
+            if (!db || !currentUserId || !appIdForFirestoreCollection) { // Ensure appIdForFirestoreCollection is available
+                console.error("Firestore DB, User ID, or Project ID for collection path not available. Cannot save data.");
                 // In a real app, display an error message to the user.
                 return;
             }
@@ -567,8 +569,8 @@
 
             try {
                 // Determine Firestore document ID. We'll use vehicleId as the document ID for easy lookup.
-                // Use appIdCanvas for the collection path as it's from Canvas context or default.
-                const docRef = doc(db, `artifacts/${appIdCanvas}/public/data/vehicles`, vehicleData.vehicleId);
+                // Using appIdForFirestoreCollection for the collection path
+                const docRef = doc(db, `artifacts/${appIdForFirestoreCollection}/public/data/vehicles`, vehicleData.vehicleId);
                 await setDoc(docRef, vehicleData, { merge: true }); // Use merge: true to update existing fields and add new ones
 
                 console.log('ข้อมูลรถถูกบันทึก/อัปเดตใน Firestore:', vehicleData.vehicleId);
@@ -673,15 +675,15 @@
         function showDeleteConfirmation(vehicleId) {
             showConfirmationModal(`คุณแน่ใจหรือไม่ที่จะลบข้อมูลรถ ${vehicleId} นี้?`, async () => {
                 // This function runs if the user clicks "ยืนยัน"
-                if (!db || !currentUserId) {
-                    console.error("Firestore DB or User ID not available. Cannot delete data.");
+                if (!db || !currentUserId || !appIdForFirestoreCollection) { // Ensure appIdForFirestoreCollection is available
+                    console.error("Firestore DB, User ID, or Project ID for collection path not available. Cannot delete data.");
                     // Display error to user
                     return;
                 }
                 loadingIndicator.classList.remove('hidden'); // Show loading
                 try {
-                    // Use appIdCanvas for the collection path
-                    const docRef = doc(db, `artifacts/${appIdCanvas}/public/data/vehicles`, vehicleId);
+                    // Using appIdForFirestoreCollection for the collection path
+                    const docRef = doc(db, `artifacts/${appIdForFirestoreCollection}/public/data/vehicles`, vehicleId);
                     await deleteDoc(docRef); // Delete the document from Firestore
                     console.log('ลบข้อมูลรถจาก Firestore:', vehicleId);
                     // onSnapshot listener will automatically re-render the table after deletion
