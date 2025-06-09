@@ -17,8 +17,23 @@
 
         // Firebase global variables injected by the Canvas environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Default Firebase configuration for local testing or outside Canvas environment.
+        // IMPORTANT: These values have been replaced with your actual Firebase project configuration.
+        const defaultFirebaseConfig = {
+            apiKey: "AIzaSyBNA8ZDDCdEPTTTB4qBUBN7gHrJrkmN4GA",
+            authDomain: "insulogistic-vehicle-db.firebaseapp.com",
+            projectId: "insulogistic-vehicle-db",
+            storageBucket: "insulogistic-vehicle-db.firebasestorage.app",
+            messagingSenderId: "22852291794",
+            appId: "1:22852291794:web:7aac5242ceb4d729fe710b",
+            measurementId: "G-L02E28SRQQ"
+        };
+
+        // Use the Canvas-provided config if available, otherwise use the default config
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : defaultFirebaseConfig;
+
 
         // Initialize Firebase application
         const app = initializeApp(firebaseConfig);
